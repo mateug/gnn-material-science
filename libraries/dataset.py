@@ -5,6 +5,7 @@ import torch
 import json
 import os
 
+from pymatgen.io.vasp import Poscar
 import libraries.graph as clg
 
 from torch_geometric.data import Data
@@ -14,83 +15,202 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 sns.set_theme()
 
+def load_structure_from_POSCAR(
+        material_folder
+):
+    """Load a pymatgen Structure from a POSCAR file inside a material folder."""
+    poscar_path = os.path.join(material_folder, 'POSCAR')
+    if not os.path.exists(poscar_path):
+        raise FileNotFoundError(f'POSCAR not found in {material_folder}')
+    return Poscar.from_file(poscar_path).structure
+
+
+def load_material_metadata(
+        material_folder
+):
+    """Load metadata from metadata.json if present."""
+    metadata_path = os.path.join(material_folder, 'metadata.json')
+    if not os.path.exists(metadata_path):
+        return {}
+    with open(metadata_path, 'r') as json_file:
+        return json.load(json_file)
+
+
+def get_target_value(
+        material_folder,
+        target,
+        metadata
+):
+    """Extract a target value from metadata or legacy text files."""
+    target_map = {
+        'EPA': 'energy_per_atom',
+        'bandgap': 'band_gap'
+    }
+    metadata_key = target_map.get(target, target)
+    if metadata_key in metadata:
+        return float(metadata[metadata_key])
+
+    if target == 'EPA':
+        file_path = os.path.join(material_folder, 'EPA')
+    elif target == 'bandgap':
+        file_path = os.path.join(material_folder, 'bandgap')
+    else:
+        raise ValueError(f'Unsupported target {target}')
+
+    if os.path.exists(file_path):
+        return float(np.loadtxt(file_path))
+
+    raise FileNotFoundError(f'Target {target} not found for {material_folder}')
+
+
 def generate_dataset(
         data_path,
         targets,
-        data_folder
+        data_folder,
+        max_samples=None
 ):
-    """Generates a dataset from the raw data and saves it to disk.
+    """Generates a dataset from the raw data and saves it to disk, supporting incremental growth.
 
     Args:
         data_path   (str): Path to the raw data.
         targets     (list): List of targets to be predicted.
         data_folder (str): Path to the folder where the dataset will be saved.
+        max_samples (int, optional): Maximum number of samples to include in the dataset. If None, include all available samples.
 
     Returns:
         None
     """
-    # Define basic dataset parameters for tracking data
-    dataset_parameters = {
-        'input_folder':  data_path,
-        'output_folder': data_folder,
-        'target':        targets
-    }
+    dataset_path = f'{data_folder}/dataset.pt'
+    dataset_parameters_path = os.path.join(data_folder, 'dataset_parameters.json')
+    
+    # Load existing dataset if present
+    if os.path.exists(dataset_path):
+        dataset = torch.load(dataset_path, weights_only=False)
+        processed_labels = {graph.label for graph in dataset}
+        print(f"Loaded existing dataset with {len(dataset)} samples.")
+    else:
+        dataset = []
+        processed_labels = set()
+        print("Starting new dataset generation.")
+    
+    # Load or create dataset parameters
+    if os.path.exists(dataset_parameters_path):
+        with open(dataset_parameters_path, 'r') as f:
+            dataset_parameters = json.load(f)
+        # Update max_samples if changed
+        if dataset_parameters.get('max_samples') != max_samples:
+            print(f"Updating max_samples from {dataset_parameters.get('max_samples')} to {max_samples}")
+            dataset_parameters['max_samples'] = max_samples
+    else:
+        dataset_parameters = {
+            'input_folder':  data_path,
+            'output_folder': data_folder,
+            'target':        targets,
+            'max_samples':   max_samples
+        }
+    
+    # Check if we need to add more samples
+    current_samples = len(dataset)
+    if max_samples is not None and current_samples >= max_samples:
+        print(f"Dataset already has {current_samples} samples, which meets or exceeds max_samples={max_samples}. Skipping generation.")
+        return
+    elif max_samples is None and current_samples > 0:
+        print(f"Dataset has {current_samples} samples. Since max_samples=None, checking if all materials are processed...")
+        # For max_samples=None, we need to check if we've processed all possible materials
+        # This is complex, so for now, we'll assume if current_samples > 0 and max_samples=None, we continue to add more
+        pass
     
     if not os.path.exists(data_folder):
-        os.system(f'mkdir {data_folder}')
+        os.makedirs(data_folder, exist_ok=True)
     
-    # Dump the dictionary with numpy arrays to a JSON file
-    with open(f'{data_folder}/dataset_parameters.json', 'w') as json_file:
+    # Save updated dataset parameters
+    with open(dataset_parameters_path, 'w') as json_file:
         json.dump(dataset_parameters, json_file)
 
-    # Generate the raw dataset from scratch, and standardize it
+    # Continue generating the dataset incrementally
     
     # Read all materials within the database
-    dataset = []
-    for material in os.listdir(data_path):
+    new_samples_added = 0
+    for material in sorted(os.listdir(data_path)):  # Sort for deterministic order
+        # Check if max_samples reached
+        if max_samples is not None and len(dataset) >= max_samples:
+            break
+            
         # Check polymorph is a folder
         path_to_material = f'{data_path}/{material}'
         if not os.path.isdir(path_to_material):
             continue
         
         print(material)
-        for polymorph in os.listdir(path_to_material):
+        for polymorph in sorted(os.listdir(path_to_material)):  # Sort for deterministic order
+            # Check if max_samples reached
+            if max_samples is not None and len(dataset) >= max_samples:
+                break
+                
+            label = f'{material} {polymorph}'
+            if label in processed_labels:
+                continue  # Already processed
+                
             # Path to folder containing the POSCAR
-            path_to_POSCAR = f'{data_path}/{material}/{polymorph}'
+            path_to_POSCAR = os.path.join(data_path, material, polymorph)
             
-            # Check that the folder is valid
-            if os.path.exists(path_to_POSCAR):
-                print(f'\t{polymorph}')
-                
-                try:
-                    nodes, edges, attributes = clg.graph_POSCAR_encoding(path_to_POSCAR)
-                except:
-                    print(f'\tError: {material} {polymorph} not loaded')
-                    continue
-    
-                extracted_target = []
-                for target in targets:  # Here you should load the properties of the molecule (e.g. energy, bandgap)
-                    if target == 'EPA':  # Load ground state energy per atom
-                        extracted_target.append(float(np.loadtxt(f'{path_to_POSCAR}/EPA')))
-                    elif target == 'bandgap':  # Load band-gap
-                        extracted_target.append(float(np.loadtxt(f'{path_to_POSCAR}/bandgap')))
-                
-                # Construct temporal graph structure
-                graph = Data(x=nodes,
-                             edge_index=edges.t().contiguous(),
-                             edge_attr=attributes.ravel(),
-                             y=torch.tensor(extracted_target, dtype=torch.float),
-                             label=f'{material} {polymorph}'
-                            )
-    
-                # Append to dataset and labels
-                dataset.append(graph)
+            # Check that the folder is valid and contains a POSCAR
+            if not os.path.isdir(path_to_POSCAR):
+                continue
+            if not os.path.exists(os.path.join(path_to_POSCAR, 'POSCAR')):
+                continue
 
-    torch.save(dataset, f'{data_folder}/dataset.pt')
+            print(f'\t{polymorph}')
+            
+            try:
+                structure = load_structure_from_POSCAR(path_to_POSCAR)
+                nodes, edges, attributes = clg.graph_POSCAR_encoding(structure, encoding_type='sphere-images')
+            except Exception as error:
+                print(f'\tError: {material} {polymorph} not loaded ({error})')
+                continue
+
+            metadata = load_material_metadata(path_to_POSCAR)
+            extracted_target = []
+            for target in targets:  # Load the properties for the material from metadata or from text files
+                try:
+                    extracted_target.append(get_target_value(path_to_POSCAR, target, metadata))
+                except Exception as error:
+                    print(f'\tError loading target {target} for {material} {polymorph}: {error}')
+                    extracted_target = None
+                    break
+
+            if extracted_target is None:
+                continue
+
+            # Construct temporal graph structure
+            graph = Data(x=nodes,
+                         edge_index=edges.t().contiguous(),
+                         edge_attr=attributes.ravel(),
+                         y=torch.tensor(extracted_target, dtype=torch.float),
+                         label=label
+                        )
     
-    dataset_std, std_parameters = standardize_dataset(dataset)
-    torch.save(dataset_std, f'{data_folder}/dataset_std.pt')
-    save_json(std_parameters, f'{data_folder}/standardized_parameters.json')
+            # Append to dataset
+            dataset.append(graph)
+            processed_labels.add(label)
+            new_samples_added += 1
+        
+        # Break outer loop if max_samples reached
+        if max_samples is not None and len(dataset) >= max_samples:
+            break
+    
+    print(f"Added {new_samples_added} new samples. Total dataset size: {len(dataset)}")
+    
+    # Save the updated raw dataset
+    torch.save(dataset, dataset_path)
+    
+    if not dataset:
+        raise ValueError(f"No valid graphs found in {data_path}. Check data integrity or target files.")
+    
+    # Update dataset parameters with current sample count
+    dataset_parameters['current_samples'] = len(dataset)
+    with open(dataset_parameters_path, 'w') as json_file:
+        json.dump(dataset_parameters, json_file)
 
 
 def standardize_dataset(
@@ -119,6 +239,12 @@ def standardize_dataset(
     for graph in dataset:
         if check_finite_attributes(graph):
             dataset_std.append(graph.clone())
+        else:
+            print(f"Graph {graph.label} failed finite attributes check")
+
+    print(f"Graphs after finite check: {len(dataset_std)}")
+    if not dataset_std:
+        raise ValueError("No graphs passed finite attributes check. Data may contain NaN/inf values.")
 
     # Number of graphs
     n_graphs = len(dataset_std)
@@ -257,17 +383,18 @@ def check_finite_attributes(
             - False if any node or edge attributes are NaN, inf, or -inf.
     """
     # Check node attributes
-    if not torch.any(torch.isfinite(data.x)):
+    if not torch.all(torch.isfinite(data.x)):
         return False
 
     # Check edge attributes
-    if not torch.any(torch.isfinite(data.edge_attr)):
+    if not torch.all(torch.isfinite(data.edge_attr)):
         return False
     return True
 
 
 def split_dataset(
         train_ratio,
+        val_ratio,
         test_ratio,
         dataset
 ):
@@ -275,6 +402,7 @@ def split_dataset(
 
     Args:
         train_ratio (float): Ratio of the dataset to be used for training.
+        val_ratio   (float): Ratio of the dataset to be used for validation.
         test_ratio  (float): Ratio of the dataset to be used for testing.
         dataset     (list):  List of graphs in PyTorch Geometric's Data format.
 
@@ -284,14 +412,15 @@ def split_dataset(
     # Define the sizes of the train, validation and test sets
     # Corresponds to the size wrt the number of unique materials in the dataset
     train_size = int(train_ratio * len(dataset))
+    val_size   = int(val_ratio   * len(dataset))
     test_size  = int(test_ratio  * len(dataset))
 
     np.random.shuffle(dataset)
 
     # Random, fast splitting
     train_dataset = dataset[:train_size]
-    val_dataset   = dataset[train_size:-test_size]
-    test_dataset  = dataset[-test_size:]
+    val_dataset   = dataset[train_size:train_size + val_size]
+    test_dataset  = dataset[train_size + val_size:train_size + val_size + test_size]
 
     print(f'Number of training   graphs: {len(train_dataset)}')
     print(f'Number of validation graphs: {len(val_dataset)}')
