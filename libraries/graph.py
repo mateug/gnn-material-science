@@ -307,7 +307,7 @@ def get_molecule_tessellation(
 
 def graph_POSCAR_encoding(
         structure,
-        encoding_type='molecule',
+        encoding_type='sphere-images',
         distance_threshold=6
 ):
     """Generates a graph parameters from a POSCAR.
@@ -327,7 +327,8 @@ def graph_POSCAR_encoding(
 
     # Loading dictionary of atomic masses
     atomic_data = {}
-    with open('input/atomic_masses.dat', 'r') as atomic_data_file:
+    atomic_masses_path = os.path.join(os.path.dirname(__file__), '..', 'input', 'atomic_masses.dat')
+    with open(atomic_masses_path, 'r') as atomic_data_file:
         for line in atomic_data_file:
             key, atomic_mass, charge, electronegativity, ionization_energy = line.split()
             atomic_data[key] = {
