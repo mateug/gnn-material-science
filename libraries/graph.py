@@ -19,7 +19,15 @@ def get_ionic_radius(
     """Return an ionic radius estimate for a specie using pymatgen."""
     symbol = None
     oxidation_state = None
-    if hasattr(specie, 'symbol'):
+
+    # Handle Site objects from pymatgen, where the species is stored on the site
+    if hasattr(specie, 'specie'):
+        site_specie = specie.specie
+        symbol = getattr(site_specie, 'symbol', None)
+        oxidation_state = getattr(site_specie, 'oxi_state', None)
+        if oxidation_state is None:
+            oxidation_state = getattr(site_specie, 'oxidation_state', None)
+    elif hasattr(specie, 'symbol'):
         symbol = specie.symbol
         oxidation_state = getattr(specie, 'oxi_state', None)
         if oxidation_state is None:

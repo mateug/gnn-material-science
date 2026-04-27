@@ -299,12 +299,15 @@ def standardize_dataset(
     target_std = torch.zeros(n_y)
     for target_index in range(n_y):
         target_std[target_index] = torch.sqrt(sum([(data.y[target_index] - target_mean[target_index]).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1)))
+        if target_std[target_index] == 0:
+            target_std[target_index] = 1.0
     
     edge_std = torch.sqrt(sum([(data.edge_attr - edge_mean).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1)))
-    
+    if edge_std == 0:
+        edge_std = 1.0
+
     # In case we want to increase the values of the normalization
     scale = torch.tensor(1e0)
-
     target_factor = target_std / scale
     edge_factor   = edge_std   / scale
 
@@ -322,6 +325,8 @@ def standardize_dataset(
         
         # Compute standard deviations
         temp_feat_std = torch.sqrt(sum([(data.x[:, feat_index] - temp_feat_mean).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1)))
+        if temp_feat_std == 0:
+            temp_feat_std = 1.0
 
         # Update normalized values into the database
         for data in dataset_std:
@@ -382,6 +387,14 @@ def standardize_dataset_from_keys(
     target_factor = target_std / scale
     edge_factor   = edge_std / scale
     feat_factor   = feat_std / scale
+
+    if np.isscalar(edge_factor):
+        edge_factor = 1.0 if edge_factor == 0 else edge_factor
+    else:
+        edge_factor = np.where(edge_factor == 0, 1.0, edge_factor)
+
+    target_factor = np.where(target_factor == 0, 1.0, target_factor)
+    feat_factor = np.where(feat_factor == 0, 1.0, feat_factor)
 
     for data in dataset:
         data.edge_attr = (data.edge_attr - edge_mean) / edge_factor
