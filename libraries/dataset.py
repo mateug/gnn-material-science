@@ -580,8 +580,6 @@ def parity_plot(
     x_val,   y_val   = validation
     x_test,  y_test  = test
 
-    plt.figure(figsize=figsize)
-
     if np.any(~np.isnan(train)):
         plt.plot(x_train, y_train, '.', label='Train')
     if np.any(~np.isnan(validation)):
