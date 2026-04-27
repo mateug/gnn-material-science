@@ -1,3 +1,4 @@
+import importlib
 import matplotlib.pyplot as plt
 import seaborn           as sns
 import numpy             as np
@@ -43,16 +44,20 @@ def get_target_value(
 ):
     """Extract a target value from metadata or legacy text files."""
     target_map = {
-        'EPA': 'energy_per_atom',
-        'bandgap': 'band_gap'
+        'epa': 'energy_per_atom',
+        'bandgap': 'band_gap',
+        'e_1d': 'E_1D',
+        'e_2d': 'E_2D',
+        'e_3d': 'E_3D'
     }
-    metadata_key = target_map.get(target, target)
+    normalized_target = target.lower()
+    metadata_key = target_map.get(normalized_target, target)
     if metadata_key in metadata:
         return float(metadata[metadata_key])
 
-    if target == 'EPA':
+    if normalized_target == 'epa':
         file_path = os.path.join(material_folder, 'EPA')
-    elif target == 'bandgap':
+    elif normalized_target == 'bandgap':
         file_path = os.path.join(material_folder, 'bandgap')
     else:
         raise ValueError(f'Unsupported target {target}')
@@ -80,6 +85,19 @@ def generate_dataset(
     Returns:
         None
     """
+    base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if not os.path.isabs(data_path):
+        data_path = os.path.abspath(os.path.join(base_path, data_path))
+    if not os.path.isabs(data_folder):
+        data_folder = os.path.abspath(os.path.join(base_path, data_folder))
+
+    print(f"[generate_dataset] data_path={data_path}, data_folder={data_folder}, targets={targets}, max_samples={max_samples}")
+
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"Raw data folder not found: {data_path}")
+    if not os.path.isdir(data_path):
+        raise NotADirectoryError(f"Raw data path is not a directory: {data_path}")
+
     dataset_path = f'{data_folder}/dataset.pt'
     dataset_parameters_path = os.path.join(data_folder, 'dataset_parameters.json')
     
@@ -93,6 +111,11 @@ def generate_dataset(
         processed_labels = set()
         print("Starting new dataset generation.")
     
+    # Ensure graph module is up to date when the notebook reloads dataset only
+    global clg
+    clg = importlib.reload(clg)
+    print(f"[generate_dataset] reloaded graph module: {clg.__file__}")
+
     # Load or create dataset parameters
     if os.path.exists(dataset_parameters_path):
         with open(dataset_parameters_path, 'r') as f:
@@ -101,11 +124,16 @@ def generate_dataset(
         if dataset_parameters.get('max_samples') != max_samples:
             print(f"Updating max_samples from {dataset_parameters.get('max_samples')} to {max_samples}")
             dataset_parameters['max_samples'] = max_samples
+        # Normalize parameter name for backward compatibility
+        if dataset_parameters.get('targets') != targets:
+            if dataset_parameters.get('target') != targets:
+                print(f"Updating targets from {dataset_parameters.get('targets', dataset_parameters.get('target'))} to {targets}")
+            dataset_parameters['targets'] = targets
     else:
         dataset_parameters = {
             'input_folder':  data_path,
             'output_folder': data_folder,
-            'target':        targets,
+            'targets':       targets,
             'max_samples':   max_samples
         }
     
