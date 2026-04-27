@@ -561,7 +561,8 @@ def parity_plot(
         validation=np.array([np.nan, np.nan]),
         test=np.array([np.nan, np.nan]),
         figsize=(3, 3),
-        save_to=None
+        save_to=None,
+        title=None
 ):
     """Plots the computed vs. predicted values for the training, validation, and testing datasets.
 
@@ -570,6 +571,7 @@ def parity_plot(
         validation  (list): List containing the computed and predicted values for the validation dataset.
         test        (list): List containing the computed and predicted values for the testing dataset.
         figsize    (tuple): Size of the figure.
+        title      (str): Title to add to the plot.
 
     Returns:
         None
@@ -592,6 +594,8 @@ def parity_plot(
     plt.ylabel('Predicted ')
     plt.plot([_min_, _max_], [_min_, _max_], '-r')
     plt.legend(loc='best')
+    if title is not None:
+        plt.title(title)
     if save_to is not None:
         plt.savefig(save_to, dpi=50, bbox_inches='tight')
     plt.show()
