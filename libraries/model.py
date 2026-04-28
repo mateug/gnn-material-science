@@ -28,6 +28,17 @@ def load_model(
             model_name=model_name,
             mode=mode,
         )
+    elif model_type == 'DGNN':
+        from libraries.DGNN import load_model as load_dgnn
+
+        model = load_dgnn(
+            n_node_features=n_node_features,
+            pdropout=pdropout,
+            device=device,
+            model_name=model_name,
+            mode=mode,
+            pretrained_name=pretrained_name,
+        )
     elif model_type == 'M3GNet':
         from libraries.M3GNet import load_model as load_m3gnet
 
