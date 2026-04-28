@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch
 
 from torch.nn import Linear, Sequential, ReLU
-from torch_geometric.nn import NNConv, GlobalAttention
+from torch_geometric.nn import GINEConv, GlobalAttention
 
 
 class DiffusionGNN(torch.nn.Module):
@@ -18,45 +18,41 @@ class DiffusionGNN(torch.nn.Module):
         super(DiffusionGNN, self).__init__()
         torch.manual_seed(12345)
 
-        hidden = 128
+        hidden = 64  # 🔴 reducido → evita OOM
 
-        # 🔷 Edge networks (usan distancia como input)
-        self.edge_mlp1 = Sequential(
-            Linear(1, 64),
+        # 🔷 MLP base para GINEConv
+        def make_mlp(in_dim, out_dim):
+            return Sequential(
+                Linear(in_dim, out_dim),
+                ReLU(),
+                Linear(out_dim, out_dim)
+            )
+
+        # 🔷 Convoluciones (usan edge_attr de forma eficiente)
+        self.conv1 = GINEConv(make_mlp(features_channels, hidden), edge_dim=hidden)
+        self.conv2 = GINEConv(make_mlp(hidden, hidden), edge_dim=hidden)
+        self.conv3 = GINEConv(make_mlp(hidden, hidden), edge_dim=hidden)
+
+        # 🔷 Embedding de edge_attr (distancia → vector)
+        self.edge_encoder = Sequential(
+            Linear(1, hidden),
             ReLU(),
-            Linear(64, features_channels * hidden)
+            Linear(hidden, hidden)
         )
 
-        self.edge_mlp2 = Sequential(
-            Linear(1, 64),
-            ReLU(),
-            Linear(64, hidden * hidden)
-        )
-
-        self.edge_mlp3 = Sequential(
-            Linear(1, 64),
-            ReLU(),
-            Linear(64, hidden * hidden)
-        )
-
-        # 🔷 Convoluciones tipo MPNN (dependientes de edge_attr)
-        self.conv1 = NNConv(features_channels, hidden, self.edge_mlp1, aggr='mean')
-        self.conv2 = NNConv(hidden, hidden, self.edge_mlp2, aggr='mean')
-        self.conv3 = NNConv(hidden, hidden, self.edge_mlp3, aggr='mean')
-
-        # 🔷 Atención global (mejor que mean pooling)
+        # 🔷 Atención global
         self.att_pool = GlobalAttention(
             gate_nn=Sequential(
-                Linear(hidden, 64),
+                Linear(hidden, 32),
                 ReLU(),
-                Linear(64, 1)
+                Linear(32, 1)
             )
         )
 
         # 🔷 MLP final
-        self.lin1 = Linear(hidden, 128)
-        self.lin2 = Linear(128, 64)
-        self.lin3 = Linear(64, 16)
+        self.lin1 = Linear(hidden, 64)
+        self.lin2 = Linear(64, 32)
+        self.lin3 = Linear(32, 16)
         self.lin = Linear(16, 1)
 
         self.pdropout = pdropout
@@ -64,10 +60,13 @@ class DiffusionGNN(torch.nn.Module):
     def forward(self, batch):
         x = batch.x
         edge_index = batch.edge_index
-        edge_attr = batch.edge_attr.unsqueeze(-1)  # 🔴 MUY IMPORTANTE
+        edge_attr = batch.edge_attr.unsqueeze(-1)
         batch_index = batch.batch
 
-        # 🔷 Message passing con residuals
+        # 🔷 Encode edge features
+        edge_attr = self.edge_encoder(edge_attr)
+
+        # 🔷 Message passing + residuals
         x1 = self.conv1(x, edge_index, edge_attr)
         x1 = x1.relu()
 

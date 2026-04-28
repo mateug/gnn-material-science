@@ -17,7 +17,6 @@ def load_model(
         device='cpu',
         model_name=None,
         mode='train',
-        pretrained_name=None
 ):
     """Load a model by type and return it on the requested device."""
     if model_type == 'GCNN':
@@ -37,7 +36,6 @@ def load_model(
             device=device,
             model_name=model_name,
             mode=mode,
-            pretrained_name=pretrained_name,
         )
     elif model_type == 'M3GNet':
         from libraries.M3GNet import load_model as load_m3gnet
@@ -48,7 +46,6 @@ def load_model(
             device=device,
             model_name=model_name,
             mode=mode,
-            pretrained_name=pretrained_name,
         )
     else:
         raise ValueError(f'Unknown model_type: {model_type}')
