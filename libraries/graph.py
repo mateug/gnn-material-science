@@ -1,14 +1,88 @@
+import os
 import numpy as np
 import torch
 import itertools
 import sys
 
 from pymatgen.core.structure import Structure
+from pymatgen.core.periodic_table import Element
 from scipy.spatial           import Voronoi
 from rdkit                   import Chem
 
 # Checking if pytorch can run in GPU, else CPU
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+def get_ionic_radius(
+        specie
+):
+    """Return an ionic radius estimate for a specie using pymatgen."""
+    symbol = None
+    oxidation_state = None
+
+    # Handle Site objects from pymatgen, where the species is stored on the site
+    if hasattr(specie, 'specie'):
+        site_specie = specie.specie
+        symbol = getattr(site_specie, 'symbol', None)
+        oxidation_state = getattr(site_specie, 'oxi_state', None)
+        if oxidation_state is None:
+            oxidation_state = getattr(site_specie, 'oxidation_state', None)
+    elif hasattr(specie, 'symbol'):
+        symbol = specie.symbol
+        oxidation_state = getattr(specie, 'oxi_state', None)
+        if oxidation_state is None:
+            oxidation_state = getattr(specie, 'oxidation_state', None)
+    else:
+        symbol = str(specie)
+
+    try:
+        el = Element(symbol)
+    except Exception:
+        return 0.0
+
+    if oxidation_state is not None:
+        radii = getattr(el, 'ionic_radii', None)
+        if radii:
+            try:
+                radius = radii.get(int(oxidation_state), None)
+                if radius is not None:
+                    if isinstance(radius, (list, tuple)) and radius:
+                        return float(radius[0])
+                    return float(radius)
+            except Exception:
+                pass
+
+    for attr in [
+            'average_ionic_radius',
+            'average_cationic_radius',
+            'average_anionic_radius',
+            'atomic_radius',
+            'van_der_waals_radius']:
+        if hasattr(el, attr):
+            radius = getattr(el, attr)
+            if radius is not None and radius != 0:
+                return float(radius)
+
+    return 0.0
+
+
+def get_atomic_features(
+        atomic_data,
+        species_name,
+        site=None
+):
+    """Return a safe atomic feature vector for a species, including ionic radius."""
+    ionic_radius = get_ionic_radius(site if site is not None else species_name)
+    if species_name not in atomic_data:
+        print(f"Warning: species '{species_name}' not found in atomic_masses.dat. Using fallback zeros.")
+        return [0.0, 0.0, 0.0, 0.0, ionic_radius]
+    return [
+        atomic_data[species_name]['atomic_mass'],
+        atomic_data[species_name]['charge'],
+        atomic_data[species_name]['electronegativity'],
+        atomic_data[species_name]['ionization_energy'],
+        ionic_radius
+    ]
 
 
 def get_all_linked_tessellation(
@@ -52,11 +126,8 @@ def get_all_linked_tessellation(
         # Name of the current species
         species_name = composition[particle_type]
 
-        # Adding the nodes (mass, charge, electronegativity and ionization energies)
-        nodes.append([atomic_data[species_name]['atomic_mass'],
-                      atomic_data[species_name]['charge'],
-                      atomic_data[species_name]['electronegativity'],
-                      atomic_data[species_name]['ionization_energy']])
+        # Adding the nodes (mass, charge, electronegativity, ionization energy, ionic radius)
+        nodes.append(get_atomic_features(atomic_data, species_name, structure.sites[index_0]))
 
         # Get the initial position
         position_0 = positions[index_0]
@@ -186,15 +257,12 @@ def get_voronoi_tessellation(
     # Generate nodes from all atoms in structure
     nodes = []
     for idx in range(structure.num_sites):
-        # Get species type
-        species_name = str(structure[idx].species)[:-1]
+        species = structure[idx].specie
+        species_name = structure[idx].species_string
 
         # Get node info
-        # Loading the node (mass, charge, electronegativity and ionization energy)
-        nodes.append([atomic_data[species_name]['atomic_mass'],
-                      atomic_data[species_name]['charge'],
-                      atomic_data[species_name]['electronegativity'],
-                      atomic_data[species_name]['ionization_energy']])
+        # Loading the node (mass, charge, electronegativity, ionization energy, ionic radius)
+        nodes.append(get_atomic_features(atomic_data, species_name, species))
     return nodes, edges, attributes
 
 
@@ -226,29 +294,19 @@ def get_sphere_images_tessellation(
     attributes = []
     for i, site in enumerate(structure.sites):
         if solid_solution_data is None:
-            atomic_mass       = atomic_data[site.species_string]['atomic_mass']
-            charge            = atomic_data[site.species_string]['charge']
-            electronegativity = atomic_data[site.species_string]['electronegativity']
-            ionization_energy = atomic_data[site.species_string]['ionization_energy']
+            node_features = get_atomic_features(atomic_data, site.species_string, site)
         else:
-            atomic_mass = sum(
-                solid_solution_data[site.species_string][ss_name] * atomic_data[ss_name]['atomic_mass']
-                for ss_name in solid_solution_data[site.species_string].keys())
-            charge = sum(
-                solid_solution_data[site.species_string][ss_name] * atomic_data[ss_name]['charge']
-                for ss_name in solid_solution_data[site.species_string].keys())
-            electronegativity = sum(
-                solid_solution_data[site.species_string][ss_name] * atomic_data[ss_name]['electronegativity']
-                for ss_name in solid_solution_data[site.species_string].keys())
-            ionization_energy = sum(
-                solid_solution_data[site.species_string][ss_name] * atomic_data[ss_name]['ionization_energy']
-                for ss_name in solid_solution_data[site.species_string].keys())
+            # For solid solutions, build a weighted average from the constituent species
+            if site.species_string not in solid_solution_data:
+                node_features = get_atomic_features(atomic_data, site.species_string, site)
+            else:
+                node_features = [0.0, 0.0, 0.0, 0.0, 0.0]
+                for ss_name, ss_fraction in solid_solution_data[site.species_string].items():
+                    ss_features = get_atomic_features(atomic_data, ss_name)
+                    node_features = [a + ss_fraction * b for a, b in zip(node_features, ss_features)]
 
-        # Adding the nodes (mass, charge, electronegativity and ionization energies)
-        nodes.append([atomic_mass,
-                      charge,
-                      electronegativity,
-                      ionization_energy])
+        # Adding the nodes (mass, charge, electronegativity, ionization energy, ionic radius)
+        nodes.append(node_features)
 
         for neighbor in neighbors[i]:
             j = neighbor.index
@@ -298,10 +356,7 @@ def get_molecule_tessellation(
     nodes = []
     for atom in mol.GetAtoms():
         species_name = atom.GetSymbol()
-        nodes.append([atomic_data[species_name]['atomic_mass'],
-                      atomic_data[species_name]['charge'],
-                      atomic_data[species_name]['electronegativity'],
-                      atomic_data[species_name]['ionization_energy']])
+        nodes.append(get_atomic_features(atomic_data, species_name))
     return nodes, edges, attributes
 
 
@@ -341,8 +396,7 @@ def graph_POSCAR_encoding(
     if encoding_type == 'voronoi':
         # Get edges and attributes for the corresponding tessellation
         nodes, edges, attributes = get_voronoi_tessellation(atomic_data,
-                                                            structure,
-                                                            periodicity)
+                                                            structure)
 
     elif encoding_type == 'sphere-images':
         # Get edges and attributes for the corresponding tessellation

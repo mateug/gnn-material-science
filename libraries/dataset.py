@@ -1,3 +1,4 @@
+import importlib
 import matplotlib.pyplot as plt
 import seaborn           as sns
 import numpy             as np
@@ -43,16 +44,20 @@ def get_target_value(
 ):
     """Extract a target value from metadata or legacy text files."""
     target_map = {
-        'EPA': 'energy_per_atom',
-        'bandgap': 'band_gap'
+        'epa': 'energy_per_atom',
+        'bandgap': 'band_gap',
+        'e_1d': 'E_1D',
+        'e_2d': 'E_2D',
+        'e_3d': 'E_3D'
     }
-    metadata_key = target_map.get(target, target)
+    normalized_target = target.lower()
+    metadata_key = target_map.get(normalized_target, target)
     if metadata_key in metadata:
         return float(metadata[metadata_key])
 
-    if target == 'EPA':
+    if normalized_target == 'epa':
         file_path = os.path.join(material_folder, 'EPA')
-    elif target == 'bandgap':
+    elif normalized_target == 'bandgap':
         file_path = os.path.join(material_folder, 'bandgap')
     else:
         raise ValueError(f'Unsupported target {target}')
@@ -80,6 +85,19 @@ def generate_dataset(
     Returns:
         None
     """
+    base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if not os.path.isabs(data_path):
+        data_path = os.path.abspath(os.path.join(base_path, data_path))
+    if not os.path.isabs(data_folder):
+        data_folder = os.path.abspath(os.path.join(base_path, data_folder))
+
+    print(f"[generate_dataset] data_path={data_path}, data_folder={data_folder}, targets={targets}, max_samples={max_samples}")
+
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"Raw data folder not found: {data_path}")
+    if not os.path.isdir(data_path):
+        raise NotADirectoryError(f"Raw data path is not a directory: {data_path}")
+
     dataset_path = f'{data_folder}/dataset.pt'
     dataset_parameters_path = os.path.join(data_folder, 'dataset_parameters.json')
     
@@ -93,6 +111,11 @@ def generate_dataset(
         processed_labels = set()
         print("Starting new dataset generation.")
     
+    # Ensure graph module is up to date when the notebook reloads dataset only
+    global clg
+    clg = importlib.reload(clg)
+    print(f"[generate_dataset] reloaded graph module: {clg.__file__}")
+
     # Load or create dataset parameters
     if os.path.exists(dataset_parameters_path):
         with open(dataset_parameters_path, 'r') as f:
@@ -101,11 +124,16 @@ def generate_dataset(
         if dataset_parameters.get('max_samples') != max_samples:
             print(f"Updating max_samples from {dataset_parameters.get('max_samples')} to {max_samples}")
             dataset_parameters['max_samples'] = max_samples
+        # Normalize parameter name for backward compatibility
+        if dataset_parameters.get('targets') != targets:
+            if dataset_parameters.get('target') != targets:
+                print(f"Updating targets from {dataset_parameters.get('targets', dataset_parameters.get('target'))} to {targets}")
+            dataset_parameters['targets'] = targets
     else:
         dataset_parameters = {
             'input_folder':  data_path,
             'output_folder': data_folder,
-            'target':        targets,
+            'targets':       targets,
             'max_samples':   max_samples
         }
     
@@ -271,12 +299,15 @@ def standardize_dataset(
     target_std = torch.zeros(n_y)
     for target_index in range(n_y):
         target_std[target_index] = torch.sqrt(sum([(data.y[target_index] - target_mean[target_index]).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1)))
+        if target_std[target_index] == 0:
+            target_std[target_index] = 1.0
     
     edge_std = torch.sqrt(sum([(data.edge_attr - edge_mean).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1)))
-    
+    if edge_std == 0:
+        edge_std = 1.0
+
     # In case we want to increase the values of the normalization
     scale = torch.tensor(1e0)
-
     target_factor = target_std / scale
     edge_factor   = edge_std   / scale
 
@@ -294,6 +325,8 @@ def standardize_dataset(
         
         # Compute standard deviations
         temp_feat_std = torch.sqrt(sum([(data.x[:, feat_index] - temp_feat_mean).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1)))
+        if temp_feat_std == 0:
+            temp_feat_std = 1.0
 
         # Update normalized values into the database
         for data in dataset_std:
@@ -354,6 +387,14 @@ def standardize_dataset_from_keys(
     target_factor = target_std / scale
     edge_factor   = edge_std / scale
     feat_factor   = feat_std / scale
+
+    if np.isscalar(edge_factor):
+        edge_factor = 1.0 if edge_factor == 0 else edge_factor
+    else:
+        edge_factor = np.where(edge_factor == 0, 1.0, edge_factor)
+
+    target_factor = np.where(target_factor == 0, 1.0, target_factor)
+    feat_factor = np.where(feat_factor == 0, 1.0, feat_factor)
 
     for data in dataset:
         data.edge_attr = (data.edge_attr - edge_mean) / edge_factor
@@ -520,7 +561,8 @@ def parity_plot(
         validation=np.array([np.nan, np.nan]),
         test=np.array([np.nan, np.nan]),
         figsize=(3, 3),
-        save_to=None
+        save_to=None,
+        title=None
 ):
     """Plots the computed vs. predicted values for the training, validation, and testing datasets.
 
@@ -529,6 +571,7 @@ def parity_plot(
         validation  (list): List containing the computed and predicted values for the validation dataset.
         test        (list): List containing the computed and predicted values for the testing dataset.
         figsize    (tuple): Size of the figure.
+        title      (str): Title to add to the plot.
 
     Returns:
         None
@@ -536,8 +579,6 @@ def parity_plot(
     x_train, y_train = train
     x_val,   y_val   = validation
     x_test,  y_test  = test
-
-    plt.figure(figsize=figsize)
 
     if np.any(~np.isnan(train)):
         plt.plot(x_train, y_train, '.', label='Train')
@@ -551,6 +592,8 @@ def parity_plot(
     plt.ylabel('Predicted ')
     plt.plot([_min_, _max_], [_min_, _max_], '-r')
     plt.legend(loc='best')
+    if title is not None:
+        plt.title(title)
     if save_to is not None:
         plt.savefig(save_to, dpi=50, bbox_inches='tight')
     plt.show()
