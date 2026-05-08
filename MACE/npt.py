@@ -4,6 +4,7 @@ import sys
 import argparse
 import io
 import json
+from tqdm import tqdm
 from mace.calculators            import mace_mp
 from ase                         import units
 from ase.md.npt                  import NPT
@@ -118,7 +119,15 @@ def main():
 
         # Run dynamic
         print(f"Running {n_steps} steps of NPT dynamics...")
+        pbar = tqdm(total=n_steps, desc=f"MD {material}", unit="step")
+        
+        def update_pbar():
+            pbar.update(1)
+            
+        dyn.attach(update_pbar, interval=1)
         dyn.run(n_steps)
+        pbar.close()
+        
         print("Dynamics completed. Saving results...")
 
         # Write trajectory to disk
