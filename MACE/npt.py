@@ -1,72 +1,151 @@
+import os
+import glob
+import sys
+import argparse
+import io
+import json
 from mace.calculators            import mace_mp
 from ase                         import units
 from ase.md.npt                  import NPT
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
-from ase.io.vasp                 import read_vasp, write_vasp, write_vasp_xdatcar
-from ase.io.trajectory           import Trajectory
+from ase.io.vasp                 import read_vasp, write_vasp
+from ase.io.trajectory           import TrajectoryWriter
 
-"""
-Podemos definir:
-    # Initial settings
-    path_to_structure: dónde está nuestra estructura inicial.
-    filename: con qué nombre guardamos la dinámica.
-    logname: con qué nombre guardamos los logs de la simulación.
-    model_load_path: modelo a usar (el que pongo es el más potente para inorgánicos).
-    device: dónde correrlo (cuda, que es gpu, o cpu).
+class TeeLogger:
+    def __init__(self, buffer):
+        self.buffer = buffer
+    def write(self, data):
+        sys.stdout.write(data)
+        sys.stdout.flush()
+        self.buffer.write(data)
+    def flush(self):
+        sys.stdout.flush()
+        self.buffer.flush()
+    def close(self):
+        pass
+
+def main():
+    parser = argparse.ArgumentParser(description="MACE NPT Simulation Workflow")
+    parser.add_argument('--candidates', type=str, default='candidates.txt', help='File with list of candidate materials')
+    parser.add_argument('--device', type=str, default='cpu', help='Device to run MACE model (cpu/cuda)')
+    parser.add_argument('--steps', type=int, default=50000, help='Number of MD steps')
+    args = parser.parse_args()
+
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    ROOT_DIR = os.path.dirname(BASE_DIR)
+    candidates_file = os.path.join(ROOT_DIR, args.candidates)
     
-    # NPT parameters
-    dispersion: si queremos dispersiones de largo alcance (como fuerzas van der Waals), en principio no necesario para perovskitas.
-    temperature: temperatura de la simulación (a 1200K debería haber difusión iónica).
-    timestep: paso de tiempo (entre 1 y 1.5 fs está bien).
-    pressure: presión externa (a cero en principio).
-    ttime, ptime: constantes del algoritmo NPT, que tocaremos si volumen, temperatura o presión no convergen establemente.
-    n_steps: número de pasos en la simulación (50000 con timestep=1 son 50 ps).
+    if not os.path.exists(candidates_file):
+        print(f"Error: Candidates file {candidates_file} not found.")
+        sys.exit(1)
 
-En la carpeta veremos:
-    filename: fichero que podemos leer con python con toda la simulación. 
-    logname: fichero con posibles errores/warning durante la dinámica.
-    CONTCAR: estructura final, tras toda la dinámica.
-"""
+    # Read materials
+    materials = []
+    with open(candidates_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                # Extract the first word (material name)
+                mat = line.split()[0]
+                materials.append(mat)
+    
+    print(f"Found {len(materials)} materials to process: {materials}")
 
-# Initial settings
-path_to_structure = 'POSCAR-CsPbBr-supercell-4x4x4'
-filename          = 'CsPbIBr.traj'  # Saving output
-logname           = 'npt.log'  # Saving log
-model_load_path   = 'mace-mpa-0-medium.model'  # ASE model
-device            = 'cpu'  # GPU acceleration
+    model_load_path = os.path.join(BASE_DIR, 'mace-mpa-0-medium.model')
 
-# NPT parameters
-dispersion  = False
-temperature = 1200  # K
-timestep    = 1  # fs
-pressure    = 0  # external pressure, GPa
-ttime       = 50  # thermostat time constant, fs
-ptime       = 500  # barostat time constant, fs
-n_steps     = 50000
+    # Simulation parameters
+    dispersion  = False
+    temperature = 1200  # K
+    timestep_fs = 1     # fs
+    pressure_gpa= 0     # GPa
+    ttime_fs    = 50    # fs
+    ptime_fs    = 500   # fs
+    n_steps     = args.steps
 
-# Read structure
-atoms = read_vasp(file=path_to_structure)
+    for material in materials:
+        print(f"\n{'='*50}\nProcessing material: {material}\n{'='*50}")
 
-# Load the pre-trained model
-atoms.calc = mace_mp(model=model_load_path, device=device, dispersion=dispersion, default_dtype='float64')
+        # Find POSCAR
+        search_path = os.path.join(ROOT_DIR, 'input', 'candidates', material, '**', 'POSCAR')
+        poscar_files = glob.glob(search_path, recursive=True)
+        
+        if not poscar_files:
+            print(f"Warning: No POSCAR found for {material} in input/candidates/{material}/")
+            continue
+            
+        path_to_structure = poscar_files[0]
+        print(f"Found structure at: {path_to_structure}")
 
-# Set units
-timestep *= units.fs
-ttime    *= units.fs
-ptime    *= units.fs
-pressure /= 160.21766208  # GPa -> eV/Å³
+        # Setup results directory
+        results_dir = os.path.join(BASE_DIR, 'results', material)
+        os.makedirs(results_dir, exist_ok=True)
 
-pfactor = units.GPa * ptime**2
+        filename = os.path.join(results_dir, f'{material}.traj')
+        logname  = os.path.join(results_dir, 'npt.log')
+        contcar  = os.path.join(results_dir, 'CONTCAR')
+        sim_data = os.path.join(results_dir, 'simulation-data.json')
 
-# Initialize velocities
-MaxwellBoltzmannDistribution(atoms, temperature_K=temperature)
+        # Read structure
+        atoms = read_vasp(file=path_to_structure)
 
-# Perform the NPT molecular dynamics (Full Martyna-Tobias-Klein dynamics)
-dyn = NPT(atoms, timestep=timestep, temperature_K=temperature, ttime=ttime, pfactor=pfactor, externalstress=pressure, trajectory=filename, logfile=logname)
+        # Load the pre-trained model
+        atoms.calc = mace_mp(model=model_load_path, device=args.device, dispersion=dispersion, default_dtype='float64')
 
-# Run dynamic
-dyn.run(n_steps)
+        # Set units for NPT
+        timestep = timestep_fs * units.fs
+        ttime    = ttime_fs * units.fs
+        ptime    = ptime_fs * units.fs
+        pressure = pressure_gpa / 160.21766208  # GPa -> eV/Å³
+        pfactor  = units.GPa * ptime**2
 
-# Write trajectory as XDATCAR
-traj = Trajectory(filename)
-write_vasp('CONTCAR', traj[-1], direct=True)  # Save the final geometrical structure as CONTCAR
+        # Initialize velocities
+        MaxwellBoltzmannDistribution(atoms, temperature_K=temperature)
+
+        # We will use an in-memory buffer for the log, but print to stdout as well
+        log_buffer = io.StringIO()
+        tee_logger = TeeLogger(log_buffer)
+
+        # Perform the NPT molecular dynamics
+        dyn = NPT(atoms, timestep=timestep, temperature_K=temperature, ttime=ttime, pfactor=pfactor, 
+                  externalstress=pressure, logfile=tee_logger, loginterval=10)
+
+        # In-memory trajectory saving
+        trajectory_frames = []
+        def append_frame():
+            trajectory_frames.append(atoms.copy())
+            
+        dyn.attach(append_frame, interval=1)
+
+        # Run dynamic
+        print(f"Running {n_steps} steps of NPT dynamics...")
+        dyn.run(n_steps)
+        print("Dynamics completed. Saving results...")
+
+        # Write trajectory to disk
+        traj_writer = TrajectoryWriter(filename, mode='w')
+        for frame in trajectory_frames:
+            traj_writer.write(frame)
+        traj_writer.close()
+        print(f"Trajectory saved to {filename}")
+
+        # Write log to disk
+        with open(logname, 'w') as f:
+            f.write(log_buffer.getvalue())
+        print(f"Log saved to {logname}")
+
+        # Write final structure
+        write_vasp(contcar, trajectory_frames[-1], direct=True)
+        print(f"Final structure saved to {contcar}")
+
+        # Write simulation-data.json
+        params = {
+            "temperature": temperature,
+            "timestep": timestep_fs,
+            "nblock": 1
+        }
+        with open(sim_data, 'w') as f:
+            json.dump(params, f, indent=4)
+        print(f"Simulation parameters saved to {sim_data}")
+
+if __name__ == '__main__':
+    main()
