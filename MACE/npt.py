@@ -4,9 +4,10 @@ import sys
 import argparse
 import io
 import json
+import warnings
 from mace.calculators            import mace_mp
 from ase                         import units
-from ase.md.npt                  import NPT
+from ase.md.melchionna           import MelchionnaNPT
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.io.vasp                 import read_vasp, write_vasp
 from ase.io.trajectory           import TrajectoryWriter
@@ -30,6 +31,9 @@ def main():
     parser.add_argument('--device', type=str, default='cpu', help='Device to run MACE model (cpu/cuda)')
     parser.add_argument('--steps', type=int, default=50000, help='Number of MD steps')
     args = parser.parse_args()
+
+    # Suppress PyTorch weights_only warning triggered by MACE
+    warnings.filterwarnings("ignore", message=".*TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD.*")
 
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     ROOT_DIR = os.path.dirname(BASE_DIR)
@@ -88,6 +92,26 @@ def main():
         # Read structure
         atoms = read_vasp(file=path_to_structure)
 
+        # Create a supercell if the structure is too small (NPT is unstable with < 150 atoms)
+        multiplier = 1
+        if len(atoms) < 150:
+            import math
+            multiplier = math.ceil((150 / len(atoms)) ** (1/3))
+            print(f"Structure is too small ({len(atoms)} atoms) for stable NPT.")
+            print(f"Creating a {multiplier}x{multiplier}x{multiplier} supercell...")
+            atoms = atoms * (multiplier, multiplier, multiplier)
+        
+        print(f"Final structure size for MD: {len(atoms)} atoms")
+
+        # Save the supercell as the reference pristine structure for future defect analysis
+        if multiplier > 1:
+            pristine_path = os.path.join(results_dir, f'POSCAR-supercell-{multiplier}x{multiplier}x{multiplier}')
+        else:
+            pristine_path = os.path.join(results_dir, 'POSCAR-unitcell')
+        write_vasp(pristine_path, atoms, direct=True)
+        print(f"Saved supercell reference to {pristine_path}")
+            
+
         # Load the pre-trained model
         atoms.calc = mace_mp(model=model_load_path, device=args.device, dispersion=dispersion, default_dtype='float64')
 
@@ -106,8 +130,8 @@ def main():
         tee_logger = TeeLogger(log_buffer)
 
         # Perform the NPT molecular dynamics
-        dyn = NPT(atoms, timestep=timestep, temperature_K=temperature, ttime=ttime, pfactor=pfactor, 
-                  externalstress=pressure, logfile=tee_logger, loginterval=10)
+        dyn = MelchionnaNPT(atoms, timestep=timestep, temperature_K=temperature, ttime=ttime, pfactor=pfactor, 
+                            externalstress=pressure, logfile=tee_logger, loginterval=10)
 
         # In-memory trajectory saving
         trajectory_frames = []
