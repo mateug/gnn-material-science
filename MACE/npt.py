@@ -13,11 +13,13 @@ from ase.io.vasp                 import read_vasp, write_vasp
 from ase.io.trajectory           import TrajectoryWriter
 
 class TeeLogger:
-    def __init__(self, buffer):
+    def __init__(self, buffer, print_to_stdout=True):
         self.buffer = buffer
+        self.print_to_stdout = print_to_stdout
     def write(self, data):
-        sys.stdout.write(data)
-        sys.stdout.flush()
+        if self.print_to_stdout:
+            sys.stdout.write(data)
+            sys.stdout.flush()
         self.buffer.write(data)
     def flush(self):
         sys.stdout.flush()
@@ -30,6 +32,7 @@ def main():
     parser.add_argument('--candidates', type=str, default='candidates.txt', help='File with list of candidate materials')
     parser.add_argument('--device', type=str, default='cpu', help='Device to run MACE model (cpu/cuda)')
     parser.add_argument('--steps', type=int, default=50000, help='Number of MD steps')
+    parser.add_argument('--progress', type=str, default='log', choices=['log', 'bar'], help='Progress display type: log or bar')
     args = parser.parse_args()
 
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -52,16 +55,26 @@ def main():
     
     print(f"Found {len(materials)} materials to process: {materials}")
 
-    model_load_path = os.path.join(BASE_DIR, 'mace-mpa-0-medium.model')
+    if args.device == 'cpu':
+        print("Local CPU environment detected. Applying performance optimizations: small model, 2fs timestep, fewer steps.")
+        model_load_path = "small"
+        timestep_fs = 2     # fs
+        n_steps = args.steps // 2 if args.steps >= 2 else args.steps
+        supercell_target = 100
+    else:
+        model_load_path = os.path.join(BASE_DIR, 'mace-mpa-0-medium.model')
+        if not os.path.exists(model_load_path):
+            model_load_path = "medium"
+        timestep_fs = 1     # fs
+        n_steps = args.steps
+        supercell_target = 150
 
     # Simulation parameters
     dispersion  = False
     temperature = 1200  # K
-    timestep_fs = 1     # fs
     pressure_gpa= 0     # GPa
     ttime_fs    = 50    # fs
     ptime_fs    = 500   # fs
-    n_steps     = args.steps
 
     for material in materials:
         print(f"\n{'='*50}\nProcessing material: {material}\n{'='*50}")
@@ -89,8 +102,27 @@ def main():
         # Read structure
         atoms = read_vasp(file=path_to_structure)
 
+        # Create a supercell if the structure is too small
+        multiplier = 1
+        if len(atoms) < supercell_target:
+            import math
+            multiplier = math.ceil((supercell_target / len(atoms)) ** (1/3))
+            print(f"Structure is too small ({len(atoms)} atoms). Target is {supercell_target}.")
+            print(f"Creating a {multiplier}x{multiplier}x{multiplier} supercell...")
+            atoms = atoms * (multiplier, multiplier, multiplier)
+        
+        print(f"Final structure size for MD: {len(atoms)} atoms")
+
+        # Save the supercell as the reference pristine structure for future defect analysis
+        if multiplier > 1:
+            pristine_path = os.path.join(results_dir, f'POSCAR-supercell-{multiplier}x{multiplier}x{multiplier}')
+        else:
+            pristine_path = os.path.join(results_dir, 'POSCAR-unitcell')
+        write_vasp(pristine_path, atoms, direct=True)
+        print(f"Saved supercell reference to {pristine_path}")
+
         # Load the pre-trained model
-        atoms.calc = mace_mp(model=model_load_path, device=args.device, dispersion=dispersion, default_dtype='float64')
+        atoms.calc = mace_mp(model=model_load_path, device=args.device, dispersion=dispersion, default_dtype='float32')
 
         # Set units for NPT
         timestep = timestep_fs * units.fs
@@ -104,36 +136,40 @@ def main():
 
         # We will use an in-memory buffer for the log, but print to stdout as well
         log_buffer = io.StringIO()
-        tee_logger = TeeLogger(log_buffer)
+        # En modo 'bar', los logs por paso se silencian (van solo al fichero)
+        tee_logger = TeeLogger(log_buffer, print_to_stdout=(args.progress == 'log'))
 
         # Perform the NPT molecular dynamics
         dyn = NPT(atoms, timestep=timestep, temperature_K=temperature, ttime=ttime, pfactor=pfactor, 
                   externalstress=pressure, logfile=tee_logger, loginterval=10)
 
-        # In-memory trajectory saving
-        trajectory_frames = []
+        # Streaming trajectory saving to prevent memory leaks
+        traj_writer = TrajectoryWriter(filename, mode='w')
         def append_frame():
-            trajectory_frames.append(atoms.copy())
+            traj_writer.write(atoms)
             
-        dyn.attach(append_frame, interval=1)
+        dyn.attach(append_frame, interval=10)
 
         # Run dynamic
-        print(f"Running {n_steps} steps of NPT dynamics...")
-        pbar = tqdm(total=n_steps, desc=f"MD {material}", unit="step")
+        import torch
+        device_status = "CUDA (GPU)" if args.device == "cuda" and torch.cuda.is_available() else "CPU"
+        if args.device == "cuda" and not torch.cuda.is_available():
+            device_status = "CPU (WARNING: CUDA requested but not found)"
         
-        def update_pbar():
-            pbar.update(1)
-            
-        dyn.attach(update_pbar, interval=1)
-        dyn.run(n_steps)
-        pbar.close()
-        
-        print("Dynamics completed. Saving results...")
+        print(f"Running {n_steps} steps of NPT dynamics... [Hardware: {device_status}]")
 
-        # Write trajectory to disk
-        traj_writer = TrajectoryWriter(filename, mode='w')
-        for frame in trajectory_frames:
-            traj_writer.write(frame)
+        if args.progress == 'bar':
+            pbar = tqdm(total=n_steps, desc=f"MD {material}", unit="step", dynamic_ncols=True)
+            def update_pbar():
+                pbar.update(1)
+            dyn.attach(update_pbar, interval=1)
+
+        dyn.run(n_steps)
+
+        if args.progress == 'bar':
+            pbar.close()
+
+        print("Dynamics completed. Saving results...")
         traj_writer.close()
         print(f"Trajectory saved to {filename}")
 
@@ -143,7 +179,7 @@ def main():
         print(f"Log saved to {logname}")
 
         # Write final structure
-        write_vasp(contcar, trajectory_frames[-1], direct=True)
+        write_vasp(contcar, atoms, direct=True)
         print(f"Final structure saved to {contcar}")
 
         # Write simulation-data.json
