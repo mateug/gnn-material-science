@@ -4,7 +4,6 @@
 /input
 /models
 .ipynb_checkpoints/
-__pycache__/
 
 # MACE execution results
 /MACE/results/
@@ -18,3 +17,9 @@ simulation-data.json
 
 # Environment variables
 .env
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
