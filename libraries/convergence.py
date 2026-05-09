@@ -41,8 +41,10 @@ def plot_and_fit(
     std  = np.std(equiv_y)
     
     # Plot equilibration (faint) and production (solid)
-    plt.plot(unequiv_x, unequiv_y, color=colors.get(data_name, 'k'), alpha=0.5, label='Equilibration')
-    plt.plot(equiv_x,   equiv_y,   color=colors.get(data_name, 'k'), alpha=1.0, label='Production')
+    # unequiv lists may be empty when step_equiv=0, skip plotting in that case
+    if len(unequiv_x) > 0:
+        plt.plot(unequiv_x, unequiv_y, color=colors.get(data_name, 'k'), alpha=0.5, label='Equilibration')
+    plt.plot(equiv_x, equiv_y, color=colors.get(data_name, 'k'), alpha=1.0, label='Production')
     
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
@@ -117,10 +119,12 @@ def analyze_convergence_and_diffusion(
     3. Saves summary to JSON.
     
     Args:
-        md_path    (str): Path to the MD trajectory file.
+        md_path    (str): Path to the MD results directory (contains .traj and simulation-data.json).
         filename   (str): Name of the trajectory file.
-        step_skip  (int): Stride for diffusion analysis (use 1 for max accuracy).
-        step_equiv (int): Frames to skip for equilibration (diffusion only).
+        step_skip  (int): Stride for reading frames (1 = read every frame).
+        step_equiv (int): Number of frames to skip as equilibration before production analysis.
+                          Set to 0 to use ALL frames (useful for short test runs).
+                          Default is 500 (suited for long production runs of ~50k steps).
     """
     traj_file   = f'{md_path}/{filename}'
     json_file   = f'{md_path}/simulation-data.json'
@@ -141,11 +145,18 @@ def analyze_convergence_and_diffusion(
                                                                                 data_format='raw', filename=filename)
 
     # Extract thermo data
-    unequiv_times, unequiv_temperatures, unequiv_pressures, unequiv_volumes = extract_thermo_data(unequiv_traj,
-                                                                                                  traj_timestep)
-    equiv_times,   equiv_temperatures,   equiv_pressures,   equiv_volumes   = extract_thermo_data(equiv_traj,
-                                                                                                  traj_timestep,
-                                                                                                  time_offset=unequiv_times[-1])
+    # unequiv_traj may be empty when step_equiv=0 — handle gracefully
+    if len(unequiv_traj) > 0:
+        unequiv_times, unequiv_temperatures, unequiv_pressures, unequiv_volumes = extract_thermo_data(
+            unequiv_traj, traj_timestep)
+        time_offset = unequiv_times[-1]
+    else:
+        unequiv_times, unequiv_temperatures, unequiv_pressures, unequiv_volumes = [], [], [], []
+        time_offset = 0
+        print("No equilibration phase (step_equiv=0). All frames used as production.")
+
+    equiv_times, equiv_temperatures, equiv_pressures, equiv_volumes = extract_thermo_data(
+        equiv_traj, traj_timestep, time_offset=time_offset)
 
     # Plot and Fit (Passing step_equiv to exclude equilibration from stats/alpha)
     mean_T, std_T = plot_and_fit(

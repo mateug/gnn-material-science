@@ -4,6 +4,7 @@ import sys
 import argparse
 import io
 import json
+import torch
 from tqdm import tqdm
 import warnings
 from mace.calculators            import mace_mp
@@ -35,6 +36,14 @@ def main():
     parser.add_argument('--steps', type=int, default=50000, help='Number of MD steps')
     parser.add_argument('--progress', type=str, default='log', choices=['log', 'bar'], help='Progress display type: log or bar')
     args = parser.parse_args()
+
+    # Validar disponibilidad de CUDA y hacer fallback si es necesario
+    if args.device == 'cuda' and not torch.cuda.is_available():
+        print("WARNING: Se solicitó CUDA pero torch.cuda.is_available() es False.")
+        print("         El runtime de Colab puede no tener GPU asignada.")
+        print("         Cambia el runtime a GPU en Colab o usa --device cpu.")
+        print("         Haciendo fallback automático a CPU...")
+        args.device = 'cpu'
 
     # Suppress PyTorch weights_only warning triggered by MACE
     warnings.filterwarnings("ignore", message=".*TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD.*")
@@ -152,10 +161,9 @@ def main():
         def append_frame():
             traj_writer.write(atoms)
             
-        dyn.attach(append_frame, interval=10)
+        dyn.attach(append_frame, interval=5) #10
 
         # Run dynamic
-        import torch
         device_status = "CUDA (GPU)" if args.device == "cuda" and torch.cuda.is_available() else "CPU"
         if args.device == "cuda" and not torch.cuda.is_available():
             device_status = "CPU (WARNING: CUDA requested but not found)"

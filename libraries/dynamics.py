@@ -444,6 +444,17 @@ def load_trajectory(
 
     unequiv_traj = full_traj[:step_equiv]
     equiv_traj = full_traj[step_equiv:]  # Remove equilibration frames
+
+    # Safety check: if step_equiv is too large, reduce it to leave at least 10% of frames as production
+    if len(equiv_traj) == 0:
+        safe_equiv = max(0, int(len(full_traj) * 0.5))
+        print(f"WARNING: step_equiv={step_equiv} >= total frames ({len(full_traj)}).")
+        print(f"         Reduciendo a {safe_equiv} frames de equilibración (50% del total).")
+        print(f"         Para deshabilitar el skip de equilibración, usa step_equiv=0.")
+        step_equiv   = safe_equiv
+        unequiv_traj = full_traj[:step_equiv]
+        equiv_traj   = full_traj[step_equiv:]
+
     print(f"Removed {step_equiv} equilibration steps.")
 
     md_steps = len(equiv_traj)
