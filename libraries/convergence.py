@@ -215,9 +215,11 @@ def analyze_convergence_and_diffusion(
 
     plt.xlabel("Time (ps)")
     plt.ylabel(r"MSD ($\AA^2$)")
+    plt.title("Mean Squared Displacement")
     plt.xlim(left=-0.1)
     plt.ylim(bottom=0)
     plt.grid(True, alpha=0.5)
+    plt.legend()
     plt.tight_layout()
     plt.savefig(f'{md_path}/diffusion.pdf', dpi=50)
     plt.show()
