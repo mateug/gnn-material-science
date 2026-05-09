@@ -17,6 +17,8 @@ def load_model(
         device='cpu',
         model_name=None,
         mode='train',
+        pretrained_name=None,
+        n_outputs=1,
 ):
     """Load a model by type and return it on the requested device."""
     if model_type == 'GCNN':
@@ -26,6 +28,7 @@ def load_model(
             device=device,
             model_name=model_name,
             mode=mode,
+            n_outputs=n_outputs,
         )
     elif model_type == 'DGNN':
         from libraries.DGNN import load_model as load_dgnn
@@ -36,6 +39,7 @@ def load_model(
             device=device,
             model_name=model_name,
             mode=mode,
+            n_outputs=n_outputs,
         )
     elif model_type == 'M3GNet':
         from libraries.M3GNet import load_model as load_m3gnet
@@ -46,6 +50,7 @@ def load_model(
             device=device,
             model_name=model_name,
             mode=mode,
+            pretrained_name=pretrained_name,
         )
     else:
         raise ValueError(f'Unknown model_type: {model_type}')
@@ -68,18 +73,21 @@ def train(
     ground_truths = []
     for data in train_loader:
         data = data.to(device)
-        out = model(data).flatten()
-        loss = criterion(out, data.y)
+        out = model(data)           # shape: [batch_size, n_targets]
+        n_targets = out.shape[-1]
+        # PyG concatenates y as [batch_size * n_targets]; reshape to [batch_size, n_targets]
+        y = data.y.view(-1, n_targets)
+        loss = criterion(out, y)
         train_loss += loss.item()
         predictions.append(out.detach().cpu().numpy())
-        ground_truths.append(data.y.detach().cpu().numpy())
+        ground_truths.append(y.detach().cpu().numpy())
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
 
     avg_train_loss = train_loss / len(train_loader)
-    predictions = np.concatenate(predictions) * target_factor + target_mean
-    ground_truths = np.concatenate(ground_truths) * target_factor + target_mean
+    predictions    = np.concatenate(predictions)    * target_factor + target_mean
+    ground_truths  = np.concatenate(ground_truths)  * target_factor + target_mean
     return avg_train_loss, predictions, ground_truths
 
 
@@ -98,14 +106,17 @@ def test(
     with torch.no_grad():
         for data in test_loader:
             data = data.to(device)
-            out = model(data).flatten()
-            loss = criterion(out, data.y)
+            out = model(data)           # shape: [batch_size, n_targets]
+            n_targets = out.shape[-1]
+            # PyG concatenates y as [batch_size * n_targets]; reshape to [batch_size, n_targets]
+            y = data.y.view(-1, n_targets)
+            loss = criterion(out, y)
             test_loss += loss.item()
             predictions.append(out.detach().cpu().numpy())
-            ground_truths.append(data.y.detach().cpu().numpy())
+            ground_truths.append(y.detach().cpu().numpy())
 
     avg_test_loss = test_loss / len(test_loader)
-    predictions = np.concatenate(predictions) * target_factor + target_mean
+    predictions   = np.concatenate(predictions)   * target_factor + target_mean
     ground_truths = np.concatenate(ground_truths) * target_factor + target_mean
     return avg_test_loss, predictions, ground_truths
 

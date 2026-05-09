@@ -12,13 +12,15 @@ class GCNN(torch.nn.Module):
     def __init__(
             self,
             features_channels,
-            pdropout
+            pdropout,
+            n_outputs=1
     ):
         """Initializes the Graph Convolutional Neural Network.
 
         Args:
             features_channels (int):   Number of input features.
             pdropout          (float): Dropout probability for regularization.
+            n_outputs         (int):   Number of output targets (1 for single, 3 for all-energies).
         """
         super(GCNN, self).__init__()
         torch.manual_seed(12345)
@@ -28,7 +30,7 @@ class GCNN(torch.nn.Module):
 
         self.linconv1 = Linear(512, 64)
         self.linconv2 = Linear(64, 16)
-        self.lin = Linear(16, 1)
+        self.lin = Linear(16, n_outputs)
         self.pdropout = pdropout
 
     def forward(self, batch):
@@ -54,9 +56,10 @@ def load_model(
         pdropout=0,
         device='cpu',
         model_name=None,
-        mode='eval'
+        mode='eval',
+        n_outputs=1
 ):
-    model = GCNN(features_channels=n_node_features, pdropout=pdropout)
+    model = GCNN(features_channels=n_node_features, pdropout=pdropout, n_outputs=n_outputs)
 
     if model_name is not None and os.path.exists(model_name):
         model.load_state_dict(torch.load(model_name, map_location='cpu'))
