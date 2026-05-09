@@ -3,3 +3,17 @@
 /datasets
 /input
 /models
+.ipynb_checkpoints/
+
+# MACE execution results
+/MACE/results/
+*.traj
+*.log
+CONTCAR
+XDATCAR
+*.pdf
+npt-convergence.json
+simulation-data.json
+
+# Environment variables
+.env
