@@ -363,7 +363,16 @@ def get_interstitials(
         )
 
         # We use the pristine structure with 0K converged lattice as reference
-        ref_structure = Structure.from_file(f'{ref_path}/POSCAR_pristine')
+        # Find the POSCAR file in the ref_path
+        import glob
+        pristine_files = glob.glob(f'{ref_path}/POSCAR-*')
+        if not pristine_files:
+            pristine_files = glob.glob(f'{ref_path}/POSCAR_pristine')
+        if not pristine_files:
+            raise FileNotFoundError(f"No reference POSCAR found in {ref_path}")
+        pristine_path = pristine_files[0]
+        
+        ref_structure = Structure.from_file(pristine_path)
 
         # Use a dummy species H to represent interstitial atoms
         # _get_candidate_sites returns triples: (site, multiplicity, equiv_fpos)
@@ -492,7 +501,15 @@ def md_analysis(
     md_frac_coords, md_cart_coords, cell, md_steps, md_atoms = load_trajectory(md_path, step_skip, step_equiv)
 
     # Load reference fractional coordinates
-    ref_frac_coord = load_frac_sites(f'{ref_path}/POSCAR_pristine')
+    import glob
+    pristine_files = glob.glob(f'{ref_path}/POSCAR-*')
+    if not pristine_files:
+        pristine_files = glob.glob(f'{ref_path}/POSCAR_pristine')
+    if not pristine_files:
+        raise FileNotFoundError(f"No reference POSCAR found in {ref_path}")
+    pristine_path = pristine_files[0]
+        
+    ref_frac_coord = load_frac_sites(pristine_path)
     ref_atoms = len(ref_frac_coord)
 
     # Get interstitial fractional coordinates

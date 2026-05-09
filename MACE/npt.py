@@ -5,9 +5,10 @@ import argparse
 import io
 import json
 from tqdm import tqdm
+import warnings
 from mace.calculators            import mace_mp
 from ase                         import units
-from ase.md.npt                  import NPT
+from ase.md.melchionna           import MelchionnaNPT
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.io.vasp                 import read_vasp, write_vasp
 from ase.io.trajectory           import TrajectoryWriter
@@ -34,6 +35,9 @@ def main():
     parser.add_argument('--steps', type=int, default=50000, help='Number of MD steps')
     parser.add_argument('--progress', type=str, default='log', choices=['log', 'bar'], help='Progress display type: log or bar')
     args = parser.parse_args()
+
+    # Suppress PyTorch weights_only warning triggered by MACE
+    warnings.filterwarnings("ignore", message=".*TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD.*")
 
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     ROOT_DIR = os.path.dirname(BASE_DIR)
@@ -140,8 +144,8 @@ def main():
         tee_logger = TeeLogger(log_buffer, print_to_stdout=(args.progress == 'log'))
 
         # Perform the NPT molecular dynamics
-        dyn = NPT(atoms, timestep=timestep, temperature_K=temperature, ttime=ttime, pfactor=pfactor, 
-                  externalstress=pressure, logfile=tee_logger, loginterval=10)
+        dyn = MelchionnaNPT(atoms, timestep=timestep, temperature_K=temperature, ttime=ttime, pfactor=pfactor, 
+                            externalstress=pressure, logfile=tee_logger, loginterval=10)
 
         # Streaming trajectory saving to prevent memory leaks
         traj_writer = TrajectoryWriter(filename, mode='w')
