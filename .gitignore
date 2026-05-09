@@ -4,6 +4,7 @@
 /input
 /models
 .ipynb_checkpoints/
+__pycache__/
 
 # MACE execution results
 /MACE/results/
