@@ -20,3 +20,4 @@ mp-api
 jupyter
 ipykernel
 python-dotenv
+tqdm

@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch_geometric.loader import DataLoader
+from tqdm.auto import tqdm
 
 from libraries.GCNN import load_model as load_gcnn
 
@@ -41,6 +42,28 @@ def load_model(
             mode=mode,
             n_outputs=n_outputs,
         )
+    elif model_type == 'FDGNN':
+        from libraries.FDGNN import load_model as load_fdgnn
+
+        model = load_fdgnn(
+            n_node_features=n_node_features,
+            pdropout=pdropout,
+            device=device,
+            model_name=model_name,
+            mode=mode,
+            n_outputs=n_outputs,
+        )
+    elif model_type == 'MDGNN':
+        from libraries.MDGNN import load_model as load_mdgnn
+
+        model = load_mdgnn(
+            n_node_features=n_node_features,
+            pdropout=pdropout,
+            device=device,
+            model_name=model_name,
+            mode=mode,
+            n_outputs=n_outputs,
+        )
     elif model_type == 'M3GNet':
         from libraries.M3GNet import load_model as load_m3gnet
 
@@ -71,7 +94,8 @@ def train(
     train_loss = 0.0
     predictions = []
     ground_truths = []
-    for data in train_loader:
+    pbar = tqdm(train_loader, desc="Training", leave=False)
+    for data in pbar:
         data = data.to(device)
         out = model(data)           # shape: [batch_size, n_targets]
         n_targets = out.shape[-1]
@@ -104,7 +128,8 @@ def test(
     predictions = []
     ground_truths = []
     with torch.no_grad():
-        for data in test_loader:
+        pbar = tqdm(test_loader, desc="Testing", leave=False)
+        for data in pbar:
             data = data.to(device)
             out = model(data)           # shape: [batch_size, n_targets]
             n_targets = out.shape[-1]
@@ -183,5 +208,7 @@ class EarlyStopping():
             model
     ):
         if val_loss < self.val_loss_min:
-            torch.save(model.module.state_dict(), self.model_name)
+            # Si el modelo está envuelto en DataParallel, usamos model.module
+            state_dict = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
+            torch.save(state_dict, self.model_name)
             self.val_loss_min = val_loss
