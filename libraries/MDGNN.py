@@ -95,12 +95,28 @@ class MixedDiffusionGNN(torch.nn.Module):
 def load_model(
         n_node_features,
         pdropout=0,
+        device='cpu',
+        model_name=None,
+        mode='eval',
         n_outputs=3,
         **kwargs
 ):
-    """Función de utilidad para instanciar el modelo FDGNN."""
-    return MixedDiffusionGNN(
+    """Función de utilidad para instanciar y cargar el modelo MixedDiffusionGNN."""
+    model = MixedDiffusionGNN(
         features_channels=n_node_features,
         pdropout=pdropout,
         n_outputs=n_outputs
     )
+
+    if model_name is not None and os.path.exists(model_name):
+        model.load_state_dict(torch.load(model_name, map_location='cpu'))
+
+    model = model.to(device)
+
+    if mode == 'eval':
+        model.eval()
+    elif mode == 'train':
+        model.train()
+
+    model = nn.DataParallel(model)
+    return model

@@ -298,11 +298,13 @@ def standardize_dataset(
     # Compute standard deviations
     target_std = torch.zeros(n_y)
     for target_index in range(n_y):
-        target_std[target_index] = torch.sqrt(sum([(data.y[target_index] - target_mean[target_index]).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1)))
+        # Using unbiased sample standard deviation (n-1)
+        target_std[target_index] = torch.sqrt(sum([(data.y[target_index] - target_mean[target_index]).pow(2).sum() for data in dataset_std]) / (n_graphs - 1))
         if target_std[target_index] == 0:
             target_std[target_index] = 1.0
     
-    edge_std = torch.sqrt(sum([(data.edge_attr - edge_mean).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1)))
+    # Using unbiased sample standard deviation (n-1)
+    edge_std = torch.sqrt(sum([(data.edge_attr - edge_mean).pow(2).sum() for data in dataset_std]) / (n_graphs - 1))
     if edge_std == 0:
         edge_std = 1.0
 
@@ -323,8 +325,8 @@ def standardize_dataset(
         # Compute mean
         temp_feat_mean = sum([data.x[:, feat_index].mean() for data in dataset_std]) / n_graphs
         
-        # Compute standard deviations
-        temp_feat_std = torch.sqrt(sum([(data.x[:, feat_index] - temp_feat_mean).pow(2).sum() for data in dataset_std]) / (n_graphs * (n_graphs - 1)))
+        # Compute standard deviations (unbiased)
+        temp_feat_std = torch.sqrt(sum([(data.x[:, feat_index] - temp_feat_mean).pow(2).sum() for data in dataset_std]) / (n_graphs - 1))
         if temp_feat_std == 0:
             temp_feat_std = 1.0
 
@@ -429,6 +431,10 @@ def check_finite_attributes(
 
     # Check edge attributes
     if not torch.all(torch.isfinite(data.edge_attr)):
+        return False
+
+    # Check target values
+    if not torch.all(torch.isfinite(data.y)):
         return False
     return True
 

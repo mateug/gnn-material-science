@@ -30,42 +30,50 @@ class FastDiffusionGNN(torch.nn.Module):
         torch.manual_seed(12345)
 
         # Hiperparámetros de arquitectura
-        hidden_dim = 128  # Reducido de 128 y de 256 para mayor velocidad en CPU
-        edge_dim = 1      # Dimensión de los atributos de las aristas (distancias)
+        hidden_dim = 192  # Punto medio para balancear velocidad y capacidad
+        edge_dim = 1      
 
         # 1. Proyección inicial
         self.node_embedding = Linear(features_channels, hidden_dim)
+        self.bn_init = nn.BatchNorm1d(hidden_dim)
 
-        # 2. Capas de Convolución de Cristal (CGConv):
-        # Reducido de 3 a 2 capas para acelerar el paso de mensajes
+        # 2. Capas de Convolución de Cristal (CGConv) con BatchNorm
         self.conv1 = CGConv(channels=hidden_dim, dim=edge_dim, aggr="mean")
+        self.bn1 = nn.BatchNorm1d(hidden_dim)
+        
         self.conv2 = CGConv(channels=hidden_dim, dim=edge_dim, aggr="mean")
+        self.bn2 = nn.BatchNorm1d(hidden_dim)
 
-        # 3. Bloque de Regresión (MLP) simplificado:
-        self.lin1 = Linear(hidden_dim, hidden_dim//2)
+        # 3. Bloque de Regresión (MLP) robusto
+        self.lin1 = Linear(hidden_dim, 128)
+        self.lin2 = Linear(128, 64)
         
         # Capa de salida
-        self.out = Linear(hidden_dim//2, n_outputs)
+        self.out = Linear(64, n_outputs)
 
         self.pdropout = pdropout
 
     def forward(self, batch):
-        # Extracción de datos del lote (batch)
         x, edge_index, edge_attr, batch_idx = batch.x, batch.edge_index, batch.edge_attr, batch.batch
 
-        # Asegurar que edge_attr tenga la dimensión correcta para CGConv
         if edge_attr.dim() == 1:
             edge_attr = edge_attr.unsqueeze(-1)
 
         # 🔷 Embedding inicial
         x = self.node_embedding(x)
+        x = self.bn_init(x)
         x = F.relu(x)
 
         # 🔷 Paso de mensajes (Message Passing)
         identity = x
-        x = F.relu(self.conv1(x, edge_index, edge_attr))
+        x = self.conv1(x, edge_index, edge_attr)
+        x = self.bn1(x)
+        x = F.relu(x)
         
-        x = F.relu(self.conv2(x, edge_index, edge_attr))
+        x = self.conv2(x, edge_index, edge_attr)
+        x = self.bn2(x)
+        x = F.relu(x)
+        
         x = x + identity # Conexión residual
 
         # 🔷 Global Pooling
@@ -75,6 +83,7 @@ class FastDiffusionGNN(torch.nn.Module):
         x = F.dropout(x, p=self.pdropout, training=self.training)
         
         x = F.relu(self.lin1(x))
+        x = F.relu(self.lin2(x))
 
         # 🔷 Salida final
         return self.out(x)
@@ -82,12 +91,28 @@ class FastDiffusionGNN(torch.nn.Module):
 def load_model(
         n_node_features,
         pdropout=0,
+        device='cpu',
+        model_name=None,
+        mode='eval',
         n_outputs=3,
         **kwargs
 ):
-    """Función de utilidad para instanciar el modelo FDGNN."""
-    return FastDiffusionGNN(
+    """Función de utilidad para instanciar y cargar el modelo FDGNN."""
+    model = FastDiffusionGNN(
         features_channels=n_node_features,
         pdropout=pdropout,
         n_outputs=n_outputs
     )
+
+    if model_name is not None and os.path.exists(model_name):
+        model.load_state_dict(torch.load(model_name, map_location='cpu'))
+
+    model = model.to(device)
+
+    if mode == 'eval':
+        model.eval()
+    elif mode == 'train':
+        model.train()
+
+    model = nn.DataParallel(model)
+    return model

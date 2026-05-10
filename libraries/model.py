@@ -64,6 +64,17 @@ def load_model(
             mode=mode,
             n_outputs=n_outputs,
         )
+    elif model_type == 'FDGNN2':
+        from libraries.FDGNN2 import load_model as load_fdgnn2
+
+        model = load_fdgnn2(
+            n_node_features=n_node_features,
+            pdropout=pdropout,
+            device=device,
+            model_name=model_name,
+            mode=mode,
+            n_outputs=n_outputs,
+        )
     elif model_type == 'M3GNet':
         from libraries.M3GNet import load_model as load_m3gnet
 
