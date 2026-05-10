@@ -4,7 +4,7 @@ Este repositorio contiene el proyecto desarrollado para un TFM cuyo objetivo es 
 
 La idea central es usar una **Graph Neural Network (GNN)** como *surrogate model* barato para predecir energías de activación y reservar **MACE** para la validación más precisa de un conjunto mucho más pequeño de materiales candidatos.
 
-> El repositorio está todavía en evolución. La etapa final de **ranking automático de candidatos con la GNN** y exportación de los **10 mejores materiales** a `candidates.txt` está planteada, pero aún no está implementada.
+> El repositorio ha completado su fase de desarrollo principal. Ahora incluye el flujo de **screening automático**, permitiendo pasar de miles de materiales a los **10 mejores** candidatos de forma totalmente automatizada.
 
 ---
 
@@ -42,7 +42,7 @@ Entrenamiento de la GNN
       ↓
 Predicción de energía de activación
       ↓
-[pendiente] Ranking top-10 candidatos
+Ranking automático de candidatos
       ↓
 Evaluación con MACE
 ```
@@ -61,6 +61,7 @@ Evaluación con MACE
 │   ├── dataset.py
 │   ├── graph.py
 │   ├── model.py
+│   ├── screen_candidates.py
 │   ├── GCNN.py
 │   ├── DGNN.py
 │   ├── FDGNN.py
@@ -71,6 +72,7 @@ Evaluación con MACE
 │   └── convergence.py
 ├── MP-query.ipynb
 ├── merge_data.py
+├── run-GNN.ipynb
 ├── run-MACE.ipynb
 ├── train-GNN.ipynb
 ├── candidates.txt
@@ -84,20 +86,23 @@ Evaluación con MACE
 - **`libraries/graph.py`**: convierte una estructura cristalina en un grafo.
 - **`libraries/dataset.py`**: construye, normaliza y guarda datasets en formato PyTorch Geometric.
 - **`libraries/model.py`**: utilidades de entrenamiento, evaluación y carga de modelos.
-- **`libraries/*.py`**: implementaciones de arquitecturas GNN.
+- **`libraries/screen_candidates.py`**: lógica de inferencia, ranking ponderado y exportación.
 - **`train-GNN.ipynb`**: entrenamiento de la red para predecir energía de activación.
+- **`run-GNN.ipynb`**: interfaz para ejecutar el screening sobre el dataset completo.
 - **`MACE/npt.py`**: ejecuta simulaciones NPT con MACE sobre materiales seleccionados.
-- **`run-MACE.ipynb`**: lanza simulaciones MACE sobre un material concreto.
-- **`MACE/plot-convergence.ipynb`**: analiza convergencia y difusión a partir de la trayectoria generada por MACE.
+- **`run-MACE.ipynb`**: lanza simulaciones MACE sobre los materiales en `candidates.txt`.
+- **`MACE/plot-convergence.ipynb`**: analiza convergencia y difusión a partir de la trayectoria.
 
 ---
 
 ## Fuentes de datos
 
 ### Materials Project
+
 Se usa para obtener estructuras cristalinas con litio y metadatos estructurales y termodinámicos.
 
 Los campos solicitados en la consulta incluyen, entre otros:
+
 - `material_id`
 - `formula_pretty`
 - `structure`
@@ -112,9 +117,11 @@ Los campos solicitados en la consulta incluyen, entre otros:
 - `symmetry`
 
 ### BVEL13k
+
 Se usa como fuente de labels de difusión / energía de activación.
 
 El cruce con esta base de datos añade:
+
 - `E_1D`
 - `E_2D`
 - `E_3D`
@@ -206,6 +213,7 @@ structure = Poscar.from_file(poscar_path).structure
 ```
 
 En este punto, el material ya no se maneja como un simple fichero POSCAR, sino como un objeto `Structure` con:
+
 - celda unitaria,
 - posiciones fraccionarias,
 - especies atómicas,
@@ -216,12 +224,14 @@ En este punto, el material ya no se maneja como un simple fichero POSCAR, sino c
 ### 4) Conversión de la estructura en grafo
 
 `libraries/graph.py` transforma la estructura cristalina en un grafo con:
+
 - **nodos** = átomos,
 - **aristas** = vecindades geométricas / relaciones cristalinas,
 - **atributos de nodo** = propiedades atómicas,
 - **atributos de arista** = distancias o pesos geométricos.
 
 Las features de cada nodo incluyen:
+
 - masa atómica,
 - carga,
 - electronegatividad,
@@ -229,6 +239,7 @@ Las features de cada nodo incluyen:
 - radio iónico estimado.
 
 El grafo se construye usando una de estas codificaciones:
+
 - `voronoi`
 - `sphere-images`
 - `all-linked`
@@ -294,6 +305,7 @@ Data(
 ```
 
 En este ejemplo:
+
 - hay 96 átomos en la celda/grupo tratado,
 - cada átomo tiene 5 features,
 - existen 812 relaciones geométricas,
@@ -304,29 +316,47 @@ En este ejemplo:
 ## Normalización y partición del dataset
 
 `libraries/dataset.py` también realiza:
+
 - filtrado de valores no finitos,
 - normalización de `x`, `edge_attr` y `y`,
 - partición en train / validation / test.
 
 La función `standardize_dataset()` calcula estadísticas globales:
+
 - media y desviación estándar de las features de nodo,
 - media y desviación estándar de las aristas,
-- media y desviación estándar de los targets.
+- media y desviación estándar de los targets (tras la transformación logarítmica).
 
-Después, `split_dataset()` divide el dataset según las proporciones definidas en el notebook de entrenamiento.
+### Transformación Logarítmica de los Targets
+
+Dado que las energías de activación pueden variar significativamente entre órdenes de magnitud, el proyecto aplica un **cambio de variable** antes de la estandarización:
+
+$$
+y_{log} = \ln(y + \epsilon)
+$$
+
+Donde $\epsilon$ (por defecto $10^{-6}$) evita problemas de indeterminación. Esta transformación:
+
+- Comprime el rango dinámico de las energías.
+- Ayuda a la GNN a aprender mejor las diferencias en materiales con baja energía (los más interesantes para el cribado).
+- Mejora drásticamente la estabilidad numérica durante el entrenamiento.
+
+![Distribuciones de los datos](images/variable_change.png)
+
+Durante la fase de **Candidate Screening**, el modelo predice valores en este espacio logarítmico. El sistema aplica automáticamente la **transformación inversa** ($e^{y_{log}} - \epsilon$) antes de generar los informes finales, asegurando que el usuario trabaje siempre con unidades físicas reales (eV).
 
 ---
 
 ## Modelos GNN incluidos
 
-El repositorio contiene varias arquitecturas experimentales:
+El repositorio contiene varias arquitecturas experimentales evaluadas durante el proyecto:
 
-- **GCNN**: baseline de convolución en grafos.
-- **DGNN**: variante más avanzada basada en la topología del grafo.
-- **FDGNN**: modelo con una formulación más rica de features/edges.
-- **FDGNN2**: segunda variante experimental de FDGNN.
-- **MDGNN**: versión multimodal / extendida.
-- **M3GNet**: integración con un modelo de materiales ya establecido.
+- **GCNN (Graph Convolutional Neural Network)**: El baseline de convolución. Ha demostrado ser el **segundo mejor modelo** en términos de precisión de predicción, con una excelente relación entre velocidad y resultados.
+- **FDGNN (Fast Diffusion GNN)**: Una versión simplificada de la arquitectura DGNN. Es el modelo que ha dado **mejores resultados** (superando a GCNN), aunque su tiempo de entrenamiento es considerablemente mayor.
+- **FDGNN2**: Segunda variante experimental de la arquitectura FDGNN.
+- **DGNN (Diffusion GNN)**: Una arquitectura más compleja que resultó ser **demasiado costosa** computacionalmente para el volumen de datos del proyecto.
+- **MDGNN (Multimodal DGNN)**: Un híbrido entre GCNN y DGNN que, al igual que su predecesor, resultó ser **excesivamente costoso** de entrenar.
+- **M3GNet**: Se intentó integrar este modelo pre-entrenado, pero **no ha funcionado** en el entorno actual debido a discrepancias de versiones con la librería `matgl`.
 
 La selección del modelo se gestiona desde `libraries/model.py`.
 
@@ -335,6 +365,7 @@ La selección del modelo se gestiona desde `libraries/model.py`.
 ## Entrenamiento de la GNN
 
 El notebook `train-GNN.ipynb` define:
+
 - número de épocas,
 - batch size,
 - learning rate,
@@ -347,19 +378,33 @@ El notebook `train-GNN.ipynb` define:
 El entrenamiento está pensado para dos configuraciones principales:
 
 ### Modo 1: `3d`
+
 Solo se predice `E_3D`.
 
 ### Modo 2: `multitarget`
+
 Se predicen simultáneamente:
+
 - `E_1D`
 - `E_2D`
 - `E_3D`
 
 Durante el entrenamiento se guardan:
+
 - curvas de aprendizaje,
 - predicciones,
 - comparaciones computed vs predicted,
 - checkpoints del modelo.
+
+---
+
+## Candidate Screening
+
+El proceso de cribado automatizado permite realizar inferencias sobre grandes bases de datos para identificar materiales con baja barrera de activación. El proceso sigue estos pasos:
+
+1. **Inferencia**: El modelo entrenado procesa los grafos de materiales no etiquetados.
+2. **Ranking**: Se calculan las energías de activación y se ordenan de menor a mayor.
+3. **Exportación**: Los materiales con mejor desempeño energético se exportan automáticamente a `candidates.txt` para su posterior validación de alta fidelidad.
 
 ---
 
@@ -368,7 +413,9 @@ Durante el entrenamiento se guardan:
 MACE se usa como una etapa posterior de validación más costosa.
 
 ### `MACE/npt.py`
+
 Este script:
+
 - lee `candidates.txt`,
 - busca la estructura POSCAR de cada material,
 - construye un supercell si hace falta,
@@ -377,6 +424,7 @@ Este script:
 - guarda trayectoria, log y estructura final.
 
 ### `run-MACE.ipynb`
+
 Lanza la simulación para un material concreto, por ejemplo:
 
 ```text
@@ -384,7 +432,9 @@ BaLiF3
 ```
 
 ### `MACE/plot-convergence.ipynb`
+
 Analiza la trayectoria generada y calcula:
+
 - convergencia de temperatura,
 - presión,
 - volumen,
@@ -397,19 +447,15 @@ Analiza la trayectoria generada y calcula:
 
 El pipeline está diseñado en dos niveles:
 
-### Ya implementado
-- extracción de candidatos desde Materials Project,
-- construcción de metadata,
-- cruce con BVEL13k,
-- creación de grafos cristalinos,
-- entrenamiento de la GNN,
-- ejecución de MACE para materiales seleccionados.
+### Implementado
 
-### Pendiente
-- script automático que recorra todos los candidatos,
-- prediga energías de activación con la GNN entrenada,
-- seleccione los 10 materiales con menor energía,
-- y genere `candidates.txt` de forma automática.
+- Extracción de candidatos desde Materials Project.
+- Construcción de metadata y cruce con BVEL13k.
+- Creación de grafos cristalinos y datasets estandarizados.
+- Entrenamiento de múltiples arquitecturas GNN (FDGNN, GCNN, etc.).
+- **Pipeline de Inferencia y Screening** (Inferencia → Ranking → Exportación).
+- Ejecución automatizada de MACE para candidatos seleccionados.
+- Análisis de convergencia y difusión post-MACE.
 
 ---
 
@@ -418,6 +464,7 @@ El pipeline está diseñado en dos niveles:
 Las dependencias se listan en `requirements.txt`.
 
 Entre ellas:
+
 - `torch`
 - `torch_geometric`
 - `pymatgen`
@@ -446,16 +493,24 @@ Si trabajas en Colab, los notebooks ya incluyen la instalación de dependencias.
 ## Uso
 
 ### 1. Descargar candidatos desde Materials Project
+
 Ejecutar `MP-query.ipynb`.
 
 ### 2. Cruzar candidatos con BVEL13k
+
 Ejecutar `merge_data.py`.
 
-### 3. Construir y entrenar el dataset
+### 3. Construir y entrenar el modelo
+
 Ejecutar `train-GNN.ipynb`.
 
-### 4. Validar materiales con MACE
-Actualizar `candidates.txt` manualmente por ahora y ejecutar `run-MACE.ipynb` o `MACE/npt.py`.
+### 4. Ejecutar el Screening automático
+
+Configurar el modelo deseado en `run-GNN.ipynb` y ejecutarlo para generar `candidates.txt`.
+
+### 5. Validar materiales con MACE
+
+Ejecutar `run-MACE.ipynb` o `MACE/npt.py` para procesar los candidatos seleccionados.
 
 ---
 
