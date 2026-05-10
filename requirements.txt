@@ -11,3 +11,13 @@ rdkit
 litraj
 matgl
 dgl
+ase
+mace-torch
+pymatgen-analysis-diffusion
+pymatgen-analysis-defects
+pandas
+mp-api
+jupyter
+ipykernel
+python-dotenv
+tqdm
