@@ -126,6 +126,13 @@ def main():
         
         print(f"Final structure size for MD: {len(atoms)} atoms")
 
+        # Reorient cell to standard triangular form (required by MelchionnaNPT)
+        # We use cellpar to ensure compatibility across all ASE versions
+        from ase.geometry import cell_to_cellpar, cellpar_to_cell
+        cellpar = cell_to_cellpar(atoms.cell)
+        new_cell = cellpar_to_cell(cellpar)
+        atoms.set_cell(new_cell, scale_atoms=True)
+
         # Save the supercell as the reference pristine structure for future defect analysis
         if multiplier > 1:
             pristine_path = os.path.join(results_dir, f'POSCAR-supercell-{multiplier}x{multiplier}x{multiplier}')
