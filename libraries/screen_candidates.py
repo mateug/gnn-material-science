@@ -154,8 +154,12 @@ def rank_candidates(results, target='E_3D', weights=None):
         target (str): The single target to use if weights are None.
         weights (dict, optional): A dictionary of {target_name: weight}. 
                                   If provided, ranking is based on weighted sum.
+    
+    Returns:
+        tuple: (DataFrame of results, string describing the ranking formula)
     """
     df = pd.DataFrame(results)
+    ranking_label = ""
     
     if weights:
         # Calculate weighted sum
@@ -164,7 +168,8 @@ def rank_candidates(results, target='E_3D', weights=None):
         for t, w in weights.items():
             if t in df.columns:
                 df['ranking_score'] += df[t] * w
-                applied_weights_str.append(f"{w}*{t}")
+                if w != 0:
+                    applied_weights_str.append(f"{w}*{t}")
         
         ranking_label = " + ".join(applied_weights_str)
         print(f"Ranking by weighted sum: {ranking_label}")
@@ -177,13 +182,14 @@ def rank_candidates(results, target='E_3D', weights=None):
             print(f"Warning: Target {target} not found, using {target} for ranking.")
         
         df['ranking_score'] = df[target]
+        ranking_label = target
         print(f"Ranking by single target: {target}")
 
     # Rank by score (ascending: lower energy is usually better for activation)
     df = df.sort_values(by='ranking_score').reset_index(drop=True)
     df['rank'] = df.index + 1
     
-    return df
+    return df, ranking_label
 
 def write_candidates_txt(df, top_n, output_path):
     """
@@ -201,8 +207,7 @@ def write_predictions_csv(df, output_path):
     Writes all predictions to candidate_predictions.csv.
     """
     # Ensure columns order
-    cols = ['material', 'symmetry', 'rank', 'ranking_score']
-    energy_cols = [c for r in [df.columns] for c in r if c.startswith('E_')]
+    energy_cols = [c for c in df.columns if c.startswith('E_')]
     final_cols = ['material', 'symmetry'] + sorted(energy_cols) + ['ranking_score', 'rank']
     
     # Filter columns to only what exists
@@ -214,22 +219,28 @@ def write_predictions_csv(df, output_path):
 def plot_energy_distributions(results):
     """
     Plots the distribution of predicted energies for each target.
+    Clips the X-axis to the 99th percentile for better visibility.
     """
     df = pd.DataFrame(results)
     energy_cols = [c for c in df.columns if c.startswith('E_')]
     
+    # Calculate global 99th percentile to clip outlier view
+    all_values = df[energy_cols].values.flatten()
+    upper_limit = np.percentile(all_values, 99)
+    
     plt.figure(figsize=(10, 5))
     for col in energy_cols:
-        sns.histplot(df[col], kde=True, label=col, alpha=0.5)
+        sns.histplot(df[col], kde=True, label=col, alpha=0.4)
     
     plt.title("Distribution of Predicted Activation Energies")
     plt.xlabel("Energy (eV)")
     plt.ylabel("Frequency")
+    plt.xlim(0, upper_limit) # Shorten the X-axis
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.7)
     plt.show()
 
-def plot_top_candidates(df, top_n=10):
+def plot_top_candidates(df, top_n=10, label="Ranking Score"):
     """
     Plots a bar chart of the top N candidates and their ranking scores.
     """
@@ -239,8 +250,8 @@ def plot_top_candidates(df, top_n=10):
     plt.figure(figsize=(12, 6))
     sns.barplot(data=top_df, x='ranking_score', y='display_label', palette='viridis')
     
-    plt.title(f"Top {top_n} Materials by Ranking Score")
-    plt.xlabel("Ranking Score (Lower is better)")
+    plt.title(f"Top {top_n} Materials by {label}")
+    plt.xlabel(label)
     plt.ylabel("Material")
     plt.grid(True, axis='x', linestyle='--', alpha=0.7)
     plt.tight_layout()

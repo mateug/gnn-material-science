@@ -1,10 +1,10 @@
 Li2O Fm-3m
 Li2S Fm-3m
+LiI P6_3mc
+LiI Fm-3m
+LiI P6_3-mmc
 Li2Se Fm-3m
-Li3BrO Pm-3m
 Li9S3N Pm-3m
-Li7Br3O2 I4-mmm
 Li7IN2 Cm
+Li3BrO Pm-3m
 Li8TeN2 I4_1md
-Li3N P6-mmm
-Li3ClO Pm-3m
