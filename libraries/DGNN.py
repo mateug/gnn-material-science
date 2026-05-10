@@ -13,7 +13,8 @@ class DiffusionGNN(torch.nn.Module):
     def __init__(
             self,
             features_channels,
-            pdropout
+            pdropout,
+            n_outputs=1
     ):
         super(DiffusionGNN, self).__init__()
         torch.manual_seed(12345)
@@ -53,7 +54,7 @@ class DiffusionGNN(torch.nn.Module):
         self.lin1 = Linear(hidden, 64)
         self.lin2 = Linear(64, 32)
         self.lin3 = Linear(32, 16)
-        self.lin = Linear(16, 1)
+        self.lin = Linear(16, n_outputs)
 
         self.pdropout = pdropout
 
@@ -95,9 +96,10 @@ def load_model(
         pdropout=0,
         device='cpu',
         model_name=None,
-        mode='eval'
+        mode='eval',
+        n_outputs=1
 ):
-    model = DiffusionGNN(features_channels=n_node_features, pdropout=pdropout)
+    model = DiffusionGNN(features_channels=n_node_features, pdropout=pdropout, n_outputs=n_outputs)
 
     if model_name is not None and os.path.exists(model_name):
         model.load_state_dict(torch.load(model_name, map_location='cpu'))
