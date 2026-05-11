@@ -568,7 +568,9 @@ def parity_plot(
         test=np.array([np.nan, np.nan]),
         figsize=(3, 3),
         save_to=None,
-        title=None
+        title=None,
+        show=True,
+        dpi=300
 ):
     """Plots the computed vs. predicted values for the training, validation, and testing datasets.
 
@@ -601,8 +603,9 @@ def parity_plot(
     if title is not None:
         plt.title(title)
     if save_to is not None:
-        plt.savefig(save_to, dpi=50, bbox_inches='tight')
-    plt.show()
+        plt.savefig(save_to, dpi=dpi, bbox_inches='tight')
+    if show:
+        plt.show()
 
 
 def losses_plot(
@@ -610,7 +613,9 @@ def losses_plot(
         val_losses,
         to_log=True,
         figsize=(3, 3),
-        save_to=None
+        save_to=None,
+        show=True,
+        dpi=300
 ):
     """Plots the training and validation losses.
 
@@ -634,8 +639,9 @@ def losses_plot(
     plt.ylabel('Loss')
     plt.legend(loc='best')
     if save_to is not None:
-        plt.savefig(save_to, dpi=50, bbox_inches='tight')
-    plt.show()
+        plt.savefig(save_to, dpi=dpi, bbox_inches='tight')
+    if show:
+        plt.show()
 
 
 def get_min_max(*data):
